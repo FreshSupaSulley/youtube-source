@@ -8,6 +8,9 @@ plugins {
     alias(libs.plugins.maven.publish.base)
 }
 
+// new
+version = "1.0.0-patch"
+
 lavalinkPlugin {
     name = "youtube-plugin"
     path = "dev.lavalink.youtube.plugin"
