@@ -85,21 +85,28 @@ public abstract class StreamingNonMusicClient extends NonMusicClient {
             ? decodeUrlEncodedItems(cipher, true)
             : Collections.emptyMap();
 
+        if (DataFormatTools.isNullOrEmpty(url) && DataFormatTools.isNullOrEmpty(cipherInfo.get("url"))) {
+            log.debug("Client '{}' is missing format URL for itag '{}'. SABR response?", getIdentifier(), formatJson.get("itag").text());
+            return false;
+        }
+
         Map<String, String> urlMap = DataFormatTools.isNullOrEmpty(url)
             ? decodeUrlEncodedItems(cipherInfo.get("url"), false)
             : decodeUrlEncodedItems(url, false);
 
         try {
             long contentLength = formatJson.get("contentLength").asLong(CONTENT_LENGTH_UNKNOWN);
+            int itag = (int) formatJson.get("itag").asLong(-1);
 
-            if (contentLength == CONTENT_LENGTH_UNKNOWN && !isLive) {
+            // itag 18 is a legacy format which doesn't have a (valid) content length field.
+            if (contentLength == CONTENT_LENGTH_UNKNOWN && !isLive && itag != 18) {
                 log.debug("Track is not a live stream, but no contentLength in format {}, skipping", formatJson.format());
                 return true; // this isn't considered fatal.
             }
 
             formats.add(new StreamFormat(
                 ContentType.parse(formatJson.get("mimeType").text()),
-                (int) formatJson.get("itag").asLong(-1L),
+                itag,
                 formatJson.get("bitrate").asLong(Units.BITRATE_UNKNOWN),
                 contentLength,
                 formatJson.get("audioChannels").asLong(2),

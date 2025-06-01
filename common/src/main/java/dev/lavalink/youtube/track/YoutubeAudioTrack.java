@@ -6,6 +6,7 @@ import com.sedmelluq.discord.lavaplayer.source.AudioSourceManager;
 import com.sedmelluq.discord.lavaplayer.tools.ExceptionTools;
 import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
 import com.sedmelluq.discord.lavaplayer.tools.FriendlyException.Severity;
+import com.sedmelluq.discord.lavaplayer.tools.JsonBrowser;
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpInterface;
 import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
 import com.sedmelluq.discord.lavaplayer.track.AudioTrackInfo;
@@ -16,6 +17,7 @@ import dev.lavalink.youtube.ClientInformation;
 import dev.lavalink.youtube.UrlTools;
 import dev.lavalink.youtube.UrlTools.UrlInfo;
 import dev.lavalink.youtube.YoutubeAudioSourceManager;
+import dev.lavalink.youtube.cipher.ScriptExtractionException;
 import dev.lavalink.youtube.clients.skeleton.Client;
 import dev.lavalink.youtube.track.format.StreamFormat;
 import dev.lavalink.youtube.track.format.TrackFormats;
@@ -24,6 +26,7 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Arrays;
@@ -32,6 +35,7 @@ import java.util.Map;
 import static com.sedmelluq.discord.lavaplayer.container.Formats.MIME_AUDIO_WEBM;
 import static com.sedmelluq.discord.lavaplayer.tools.DataFormatTools.decodeUrlEncodedItems;
 import static com.sedmelluq.discord.lavaplayer.tools.Units.CONTENT_LENGTH_UNKNOWN;
+import static dev.lavalink.youtube.http.YoutubeOauth2Handler.OAUTH_INJECT_CONTEXT_ATTRIBUTE;
 
 /**
  * Audio track that handles processing Youtube videos as audio tracks.
@@ -66,6 +70,17 @@ public class YoutubeAudioTrack extends DelegatedAudioTrack {
     }
 
     try (HttpInterface httpInterface = sourceManager.getInterface()) {
+      try {
+        Object userData = getUserData();
+        if (userData != null) {
+          JsonBrowser jsonUserData = JsonBrowser.parse(userData.toString());
+          if (jsonUserData.get("oauth-token") != null) {
+            httpInterface.getContext().setAttribute(OAUTH_INJECT_CONTEXT_ATTRIBUTE, jsonUserData.get("oauth-token").text());
+          }
+        }
+      } catch (IOException e) {
+        log.debug("Failed to parse token from userData", e);
+      }
       Exception lastException = null;
 
       for (Client client : clients) {
@@ -90,11 +105,13 @@ public class YoutubeAudioTrack extends DelegatedAudioTrack {
             continue;
           }
 
-          String message = e.getMessage();
-
-          if ("Not success status code: 403".equals(message) ||
-              "Invalid status code for player api response: 400".equals(message) ||
-              (message != null && message.contains("No supported audio streams available"))) {
+          if (e instanceof ScriptExtractionException) {
+            // If we're still early in playback, we can try another client
+            if (localExecutor.getPosition() <= BAD_STREAM_POSITION_THRESHOLD_MS) {
+              continue;
+            }
+          } else if ("Not success status code: 403".equals(e.getMessage()) ||
+                  "Invalid status code for player api response: 400".equals(e.getMessage())) {
             // As long as the executor position has not surpassed the threshold for which
             // a stream is considered unrecoverable, we can try to renew the playback URL with
             // another client.
@@ -199,10 +216,12 @@ public class YoutubeAudioTrack extends DelegatedAudioTrack {
 
     StreamFormat format = formats.getBestFormat();
 
-    URI resolvedUrl = sourceManager.getCipherManager()
-        .resolveFormatUrl(httpInterface, formats.getPlayerScriptUrl(), format);
-
-    resolvedUrl = client.transformPlaybackUri(format.getUrl(), resolvedUrl);
+    URI resolvedUrl = format.getUrl();
+    if (client.requirePlayerScript()) {
+      resolvedUrl = sourceManager.getCipherManager()
+              .resolveFormatUrl(httpInterface, formats.getPlayerScriptUrl(), format);
+      resolvedUrl = client.transformPlaybackUri(format.getUrl(), resolvedUrl);
+    }
 
     return new FormatWithUrl(format, resolvedUrl);
   }
